@@ -1,0 +1,28 @@
+# Blueprint da Render: cria o site (Python) + banco PostgreSQL de uma vez.
+services:
+  - type: web
+    name: ely-cepmg
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 60
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.3
+      - key: GROQ_API_KEY
+        sync: false            # a Render vai pedir para você colar a chave
+      - key: SECRET_KEY
+        generateValue: true    # chave secreta gerada automaticamente
+      - key: ADMIN_USER
+        sync: false            # usuário inicial (ex.: coordenacao)
+      - key: ADMIN_PASS
+        sync: false            # senha inicial
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ely-db
+          property: connectionString
+
+databases:
+  - name: ely-db
+    plan: free
