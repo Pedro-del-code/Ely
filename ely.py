@@ -6,7 +6,9 @@ import requests
 from rag import Index
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# Groq desligou o llama-3.3-70b-versatile em 16/08/2026. Modelos atuais, em ordem de tentativa
+# (se um sair do ar, o próximo é usado automaticamente). Dá para forçar um com GROQ_MODEL.
+MODELS = [m for m in [os.getenv("GROQ_MODEL"), "openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"] if m]
 index = Index()
 
 SYSTEM = """Você é a Ely, a assistente de IA do Colégio Estadual da Polícia Militar de Goiás (CEPMG). Fale em português do Brasil, de forma simpática, clara e respeitosa, como uma professora particular e orientadora escolar.
@@ -33,21 +35,30 @@ def ask(messages: list) -> str:
     users = [m["content"] for m in messages if m["role"] == "user"]
     query = " ".join(users[-2:])  # pergunta atual + anterior, para entender "e sobre isso?"
     context = "\n\n".join(f"[Trecho {i+1}]\n{t}" for i, t in enumerate(index.search(query)))
-    payload = {
-        "model": MODEL,
+    base = {
         "temperature": 0.3,
-        "max_tokens": 1400,
+        "max_tokens": 2500,  # modelos gpt-oss "pensam" antes de responder, então precisa de folga
         "messages": [
             {"role": "system", "content": SYSTEM + "\n\nTRECHOS DO REGIMENTO ESCOLAR:\n" + (context or "(nenhum trecho relevante)")},
             *[{"role": "assistant" if m["role"] == "assistant" else "user", "content": str(m["content"])[:2000]} for m in messages[-8:]],
         ],
     }
-    try:
-        r = requests.post(GROQ_URL, json=payload, headers={"Authorization": f"Bearer {key}"}, timeout=45)
-    except requests.RequestException:
-        raise ElyError("Não consegui falar com a Groq agora. Tente de novo em instantes.")
+    r = None
+    for model in dict.fromkeys(MODELS):
+        payload = {**base, "model": model}
+        if model.startswith("openai/gpt-oss"):
+            payload["reasoning_effort"] = "low"  # respostas mais rápidas e gastam menos cota
+        try:
+            r = requests.post(GROQ_URL, json=payload, headers={"Authorization": f"Bearer {key}"}, timeout=60)
+        except requests.RequestException:
+            raise ElyError("Não consegui falar com a Groq agora. Tente de novo em instantes.")
+        code = (r.json().get("error", {}).get("code", "") if not r.ok else "")
+        if r.ok or code not in ("model_not_found", "model_decommissioned"):
+            break  # deu certo, ou é outro erro (chave, limite...) que trocar de modelo não resolve
+    if r.status_code == 401:
+        raise ElyError("A chave da Groq (GROQ_API_KEY) está inválida. Confira no painel da Render.")
     if r.status_code == 429:
         raise ElyError("Muitas perguntas ao mesmo tempo. Aguarde alguns segundos e tente de novo.")
     if not r.ok:
         raise ElyError("Erro na Groq: " + r.json().get("error", {}).get("message", str(r.status_code)))
-    return r.json()["choices"][0]["message"]["content"]
+    return (r.json()["choices"][0]["message"].get("content") or "").strip() or "Não consegui montar a resposta. Pode reformular a pergunta?"
